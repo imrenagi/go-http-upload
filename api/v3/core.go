@@ -45,6 +45,7 @@ var (
 		"checksum",
 	}
 	SupportedTusVersion = []string{
+		"0.2.0",
 		"1.0.0",
 	}
 	SupportedChecksumAlgorithms = []string{
@@ -52,28 +53,52 @@ var (
 	}
 )
 
-func NewController() Controller {
+func NewController(s Storage) Controller {
 	return Controller{
-		store: NewStore(),
+		store: s,
 	}
 }
 
-type Controller struct {
-	store *Store
+type Storage interface {
+	Find(id string) (FileMetadata, bool)
+	Save(id string, metadata FileMetadata)
 }
 
-func TusVersionCheck(next http.Handler) http.Handler {
+type Controller struct {
+	store Storage
+}
+
+func TusResumableHeaderCheck(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(TusResumableHeader) != TusVersion {
+		if r.Method == http.MethodOptions {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if r.Header.Get(TusResumableHeader) == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("Tus-Resumable header is missing"))
+			return
+		}
+
+		tusVersion := r.Header.Get(TusResumableHeader)
+		supported := false
+		for _, version := range SupportedTusVersion {
+			if tusVersion == version {
+				supported = true
+				break
+			}
+		}
+		if !supported {
 			w.WriteHeader(http.StatusPreconditionFailed)
-			w.Write([]byte("Tus Version mistmatch"))
+			w.Write([]byte("Tus version not supported"))
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
-func TusVersionInjections(next http.Handler) http.Handler {
+func TusResumableHeaderInjections(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodOptions {
 			w.Header().Set(TusResumableHeader, TusVersion)
@@ -107,7 +132,7 @@ func (c *Controller) GetOffset() http.HandlerFunc {
 			return
 		}
 
-		if fm.ExpiresAt.Before(time.Now()) {
+		if !fm.ExpiresAt.IsZero() && fm.ExpiresAt.Before(time.Now()) {
 			w.WriteHeader(http.StatusGone)
 			w.Write([]byte("File expired"))
 			return
@@ -123,7 +148,6 @@ func (c *Controller) GetOffset() http.HandlerFunc {
 			w.Header().Add(UploadExpiresHeader, uploadExpiresAt(fm.ExpiresAt))
 		}
 		w.WriteHeader(http.StatusNoContent)
-		w.Write([]byte("GetOffset"))
 	}
 }
 
@@ -256,7 +280,7 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			}
 		}
 
-		f, err := os.OpenFile(filepath.Join("/tmp", fm.ID.String()), os.O_CREATE|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(filepath.Join("/tmp", fm.ID), os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("Error Retrieving the File"))
@@ -284,7 +308,7 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			Msg("File Uploaded")
 
 		fm.UploadedSize += length
-		c.store.Save(fm.ID.String(), fm)
+		c.store.Save(fm.ID, fm)
 
 		w.Header().Add(UploadOffsetHeader, fmt.Sprint(fm.UploadedSize))
 		if !fm.ExpiresAt.IsZero() {
@@ -333,12 +357,12 @@ func (c *Controller) CreateUpload() http.HandlerFunc {
 		log.Debug().Str("upload_metadata", uploadMetadata).Msg("Check request header")
 
 		fm := FileMetadata{
-			ID:        uuid.New(),
+			ID:        uuid.New().String(),
 			TotalSize: totalSize,
 			Metadata:  uploadMetadata,
 			ExpiresAt: time.Now().Add(UploadMaxDuration),
 		}
-		c.store.Save(fm.ID.String(), fm)
+		c.store.Save(fm.ID, fm)
 
 		w.Header().Add("Location", fmt.Sprintf("/files/%s", fm.ID))
 		if !fm.ExpiresAt.IsZero() {

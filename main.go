@@ -81,9 +81,9 @@ func (s *Server) newHTTPHandler() http.Handler {
 	apiV1Router.Handle("/binary", otelhttp.WithRouteTag("/api/v1/binary", http.HandlerFunc(v1.BinaryUpload())))
 	mux.Handle("/v1", otelhttp.WithRouteTag("/v1", http.HandlerFunc(v1.Web()))).Methods(http.MethodGet)
 
-	v3Controller := v3.NewController()
+	v3Controller := v3.NewController(v3.NewStore())
 	apiV3Router := apiRouter.PathPrefix("/v3").Subrouter()
-	apiV3Router.Use(v3.TusVersionCheck, v3.TusVersionInjections)
+	apiV3Router.Use(v3.TusResumableHeaderCheck, v3.TusResumableHeaderInjections)
 	apiV3Router.Handle("/files", otelhttp.WithRouteTag("/api/v3/files", http.HandlerFunc(v3Controller.GetConfig()))).Methods(http.MethodOptions)
 	apiV3Router.Handle("/files", otelhttp.WithRouteTag("/api/v3/files", http.HandlerFunc(v3Controller.CreateUpload()))).Methods(http.MethodPost)
 	apiV3Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v3/files/{file_id}", http.HandlerFunc(v3Controller.GetOffset()))).Methods(http.MethodHead)

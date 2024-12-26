@@ -2,6 +2,8 @@ package v3
 
 import "sync"
 
+
+
 type Store struct {
 	sync.RWMutex
 	files map[string]FileMetadata
