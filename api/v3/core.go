@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -26,12 +27,16 @@ const (
 	UploadLengthHeader      = "Upload-Length"
 	UploadMetadataHeader    = "Upload-Metadata"
 	UploadDeferLengthHeader = "Upload-Defer-Length"
+	UploadExpiresHeader     = "Upload-Expires"
 	ContentTypeHeader       = "Content-Type"
+
+	UploadMaxDuration = 10 * time.Minute
 )
 
 var (
 	SupportedTusExtensions = []string{
 		"creation",
+		"expiration",
 	}
 	SupportedTusVersion = []string{
 		"1.0.0",
@@ -91,11 +96,21 @@ func (c *Controller) GetOffset() http.HandlerFunc {
 			w.Write([]byte("File not found"))
 			return
 		}
+
+		if fm.ExpiresAt.Before(time.Now()) {
+			w.WriteHeader(http.StatusGone)
+			w.Write([]byte("File expired"))
+			return
+		}
+
 		w.Header().Add(UploadOffsetHeader, fmt.Sprint(fm.UploadedSize))
 		w.Header().Add(UploadLengthHeader, fmt.Sprint(fm.TotalSize))
 		w.Header().Add("Cache-Control", "no-store")
 		if fm.Metadata != "" {
 			w.Header().Add(UploadMetadataHeader, fm.Metadata)
+		}
+		if !fm.ExpiresAt.IsZero() {
+			w.Header().Add(UploadExpiresHeader, uploadExpiresAt(fm.ExpiresAt))
 		}
 		w.WriteHeader(http.StatusNoContent)
 		w.Write([]byte("GetOffset"))
@@ -147,6 +162,12 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			return
 		}
 
+		if fm.ExpiresAt.Before(time.Now()) {
+			w.WriteHeader(http.StatusGone)
+			w.Write([]byte("File expired"))
+			return
+		}
+
 		if offset != fm.UploadedSize {
 			w.WriteHeader(http.StatusConflict)
 			w.Write([]byte("Upload-Offset header does not match the current offset"))
@@ -187,6 +208,9 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 		c.store.Save(fm.ID.String(), fm)
 
 		w.Header().Add(UploadOffsetHeader, fmt.Sprint(fm.UploadedSize))
+		if !fm.ExpiresAt.IsZero() {
+			w.Header().Add(UploadExpiresHeader, uploadExpiresAt(fm.ExpiresAt))
+		}
 		w.WriteHeader(http.StatusNoContent)
 		w.Write([]byte("ResumeUpload"))
 	}
@@ -233,11 +257,19 @@ func (c *Controller) CreateUpload() http.HandlerFunc {
 			ID:        uuid.New(),
 			TotalSize: totalSize,
 			Metadata:  uploadMetadata,
+			ExpiresAt: time.Now().Add(UploadMaxDuration),
 		}
 		c.store.Save(fm.ID.String(), fm)
 
 		w.Header().Add("Location", fmt.Sprintf("/files/%s", fm.ID))
+		if !fm.ExpiresAt.IsZero() {
+			w.Header().Add(UploadExpiresHeader, uploadExpiresAt(fm.ExpiresAt))
+		}
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte("CreateUpload"))
 	}
+}
+
+func uploadExpiresAt(t time.Time) string {	
+	return t.Format("Mon, 02 Jan 2006 15:04:05 GMT")
 }
