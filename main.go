@@ -7,13 +7,14 @@ import (
 
 	"github.com/gorilla/mux"
 	v1 "github.com/imrenagi/go-http-upload/api/v1"
+	v3 "github.com/imrenagi/go-http-upload/api/v3"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 )
 
-var meter = otel.Meter("github.com/imrenagi/go-http-uploader")
+var meter = otel.Meter("github.com/imrenagi/go-http-upload")
 
 type ServerOpts struct {
 }
@@ -74,9 +75,19 @@ func (s *Server) newHTTPHandler() http.Handler {
 		LogInterceptor)
 	mux.Handle("/metrics", promhttp.Handler())
 	apiRouter := mux.PathPrefix("/api").Subrouter()
-	apiRouter.Handle("/v1/form", otelhttp.WithRouteTag("/api/v1/form", http.HandlerFunc(v1.FormUpload())))
-	apiRouter.Handle("/v1/binary", otelhttp.WithRouteTag("/api/v1/binary", http.HandlerFunc(v1.BinaryUpload())))
-	mux.Handle("/binary-upload", otelhttp.WithRouteTag("/binary-upload", http.HandlerFunc(v1.Web()))).Methods(http.MethodGet)
+
+	apiV1Router := apiRouter.PathPrefix("/v1").Subrouter()
+	apiV1Router.Handle("/form", otelhttp.WithRouteTag("/api/v1/form", http.HandlerFunc(v1.FormUpload())))
+	apiV1Router.Handle("/binary", otelhttp.WithRouteTag("/api/v1/binary", http.HandlerFunc(v1.BinaryUpload())))
+	mux.Handle("/v1", otelhttp.WithRouteTag("/v1", http.HandlerFunc(v1.Web()))).Methods(http.MethodGet)
+
+	v3Controller := v3.NewController()
+	apiV3Router := apiRouter.PathPrefix("/v3").Subrouter()
+	apiV3Router.Use(v3.TusVersionCheck, v3.TusVersionInjections)
+	apiV3Router.Handle("/files", otelhttp.WithRouteTag("/api/v3/files", http.HandlerFunc(v3Controller.GetConfig()))).Methods(http.MethodOptions)
+	apiV3Router.Handle("/files", otelhttp.WithRouteTag("/api/v3/files", http.HandlerFunc(v3Controller.CreateUpload()))).Methods(http.MethodPost)
+	apiV3Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v3/files/{file_id}", http.HandlerFunc(v3Controller.GetOffset()))).Methods(http.MethodHead)
+	apiV3Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v3/files/{file_id}", http.HandlerFunc(v3Controller.ResumeUpload()))).Methods(http.MethodPatch)
 
 	handler := otelhttp.NewHandler(mux, "/")
 	return handler
