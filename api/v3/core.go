@@ -1,6 +1,9 @@
 package v3
 
 import (
+	"bytes"
+	"crypto/md5"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,10 +19,11 @@ import (
 )
 
 const (
-	TusResumableHeader = "Tus-Resumable"
-	TusExtensionHeader = "Tus-Extension"
-	TusVersionHeader   = "Tus-Version"
-	TusMaxSizeHeader   = "Tus-Max-Size"
+	TusResumableHeader         = "Tus-Resumable"
+	TusExtensionHeader         = "Tus-Extension"
+	TusVersionHeader           = "Tus-Version"
+	TusMaxSizeHeader           = "Tus-Max-Size"
+	TusChecksumAlgorithmHeader = "Tus-Checksum-Algorithm"
 
 	TusVersion              = "1.0.0"
 	TusMaxSize              = int64(1073741824)
@@ -28,6 +32,7 @@ const (
 	UploadMetadataHeader    = "Upload-Metadata"
 	UploadDeferLengthHeader = "Upload-Defer-Length"
 	UploadExpiresHeader     = "Upload-Expires"
+	UploadChecksumHeader    = "Upload-Checksum"
 	ContentTypeHeader       = "Content-Type"
 
 	UploadMaxDuration = 10 * time.Minute
@@ -37,9 +42,13 @@ var (
 	SupportedTusExtensions = []string{
 		"creation",
 		"expiration",
+		"checksum",
 	}
 	SupportedTusVersion = []string{
 		"1.0.0",
+	}
+	SupportedChecksumAlgorithms = []string{
+		"md5",
 	}
 )
 
@@ -80,6 +89,7 @@ func (c *Controller) GetConfig() http.HandlerFunc {
 		w.Header().Add(TusVersionHeader, strings.Join(SupportedTusVersion, ","))
 		w.Header().Add(TusExtensionHeader, strings.Join(SupportedTusExtensions, ","))
 		w.Header().Add(TusMaxSizeHeader, fmt.Sprint(TusMaxSize))
+		w.Header().Add(TusChecksumAlgorithmHeader, strings.Join(SupportedChecksumAlgorithms, ","))
 		w.WriteHeader(http.StatusNoContent)
 		w.Write([]byte("GetConfig"))
 	}
@@ -117,11 +127,56 @@ func (c *Controller) GetOffset() http.HandlerFunc {
 	}
 }
 
+func newChecksum(value string) (checksum, error) {
+	if value == "" {
+		return checksum{}, nil
+	}
+	d := strings.Split(value, " ")
+	if len(d) != 2 {
+		return checksum{}, fmt.Errorf("invalid checksum format")
+	}
+	if d[0] != "md5" {
+		return checksum{}, fmt.Errorf("unsupported checksum algorithm")
+	}
+	return checksum{
+		Algorithm: d[0],
+		Value:     d[1],
+	}, nil
+}
+
+type checksum struct {
+	Algorithm string
+	Value     string
+}
+
+func (c checksum) equal(file io.Reader) (bool, error) {
+	hash, err := c.calculateChecksum(file)
+	if err != nil {
+		return false, err
+	}
+	return hash == c.Value, nil
+}
+
+func (c checksum) calculateChecksum(file io.Reader) (string, error) {
+	hash := md5.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
 func (c *Controller) ResumeUpload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
 		fileID := vars["file_id"]
 		log.Debug().Str("file_id", fileID).Msg("Check request path and query")
+
+		checksum, err := newChecksum(r.Header.Get(UploadChecksumHeader))
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(err.Error()))
+			return
+		}
 
 		uploadOffset := r.Header.Get(UploadOffsetHeader)
 		offset, err := strconv.ParseInt(uploadOffset, 10, 64)
@@ -174,8 +229,32 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			return
 		}
 
-		file := r.Body
-		defer file.Close()
+		// Create a copy of the request body using TeeReader
+		buf, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Error copying the request body"))
+			return
+		}
+		rd1 := io.NopCloser(bytes.NewBuffer(buf))
+		rd2 := io.NopCloser(bytes.NewBuffer(buf))
+		defer r.Body.Close()
+		defer rd1.Close()
+		defer rd2.Close()
+
+		if checksum.Algorithm != "" {
+			ok, err := checksum.equal(rd1)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte("Error calculating checksum"))
+				return
+			}
+			if !ok {
+				w.WriteHeader(http.StatusBadRequest) // checksum mismatch
+				w.Write([]byte("Checksum mismatch"))
+				return
+			}
+		}
 
 		f, err := os.OpenFile(filepath.Join("/tmp", fm.ID.String()), os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
@@ -192,7 +271,7 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			return
 		}
 
-		n, err := io.Copy(f, file)
+		n, err := io.Copy(f, rd2)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			w.Write([]byte("Error writing file"))
@@ -270,6 +349,6 @@ func (c *Controller) CreateUpload() http.HandlerFunc {
 	}
 }
 
-func uploadExpiresAt(t time.Time) string {	
+func uploadExpiresAt(t time.Time) string {
 	return t.Format("Mon, 02 Jan 2006 15:04:05 GMT")
 }
