@@ -37,12 +37,41 @@ const (
 	UploadMaxDuration = 10 * time.Minute
 )
 
+type Extension string
+
+const (
+	CreationExtension      Extension = "creation"
+	ExpirationExtension    Extension = "expiration"
+	ChecksumExtension      Extension = "checksum"
+	TerminationExtension   Extension = "termination"
+	ConcatenationExtension Extension = "concatenation"
+)
+
+type Extensions []Extension
+
+func (e Extensions) Enabled(ext Extension) bool {
+	for _, v := range e {
+		if v == ext {
+			return true
+		}
+	}
+	return false
+}
+
+func (e Extensions) String() string {
+	var s []string
+	for _, v := range e {
+		s = append(s, string(v))
+	}
+	return strings.Join(s, ",")
+}
+
 var (
 	defaultMaxSize             = uint64(0)
-	defaultSupportedExtensions = []string{
-		"creation",
-		"expiration",
-		"checksum",
+	defaultSupportedExtensions = Extensions{
+		CreationExtension,
+		ExpirationExtension,
+		ChecksumExtension,
 	}
 	SupportedTusVersion = []string{
 		"0.2.0",
@@ -54,13 +83,13 @@ var (
 )
 
 type Options struct {
-	Extensions []string
+	Extensions Extensions
 	MaxSize    uint64
 }
 
 type Option func(*Options)
 
-func WithExtensions(extensions []string) Option {
+func WithExtensions(extensions Extensions) Option {
 	return func(o *Options) {
 		o.Extensions = extensions
 	}
@@ -94,7 +123,7 @@ type Storage interface {
 
 type Controller struct {
 	store      Storage
-	extensions []string
+	extensions Extensions
 	maxSize    uint64
 }
 
@@ -141,12 +170,12 @@ func (c *Controller) GetConfig() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add(TusVersionHeader, strings.Join(SupportedTusVersion, ","))
 		if len(c.extensions) > 0 {
-			w.Header().Add(TusExtensionHeader, strings.Join(c.extensions, ","))
+			w.Header().Add(TusExtensionHeader, c.extensions.String())
 		}
 		if c.maxSize != 0 {
 			w.Header().Add(TusMaxSizeHeader, fmt.Sprint(c.maxSize))
 		}
-		if strings.Contains(strings.Join(c.extensions, ","), "checksum") {
+		if c.extensions.Enabled(ChecksumExtension) {
 			w.Header().Add(TusChecksumAlgorithmHeader, strings.Join(SupportedChecksumAlgorithms, ","))
 		}
 		w.WriteHeader(http.StatusNoContent)

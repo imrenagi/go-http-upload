@@ -197,7 +197,9 @@ func TestGetConfig(t *testing.T) {
 	t.Run("It MAY include the Tus-Extension and Tus-Max-Size headers.", func(t *testing.T) {
 		m := map[string]FileMetadata{}
 		ctrl := NewController(newFakeStore(m),
-			WithExtensions([]string{"creation", "expiration", "checksum"}),
+			WithExtensions(Extensions{CreationExtension,
+				ExpirationExtension,
+				ChecksumExtension}),
 			WithMaxSize(1073741824))
 
 		req := httptest.NewRequest(http.MethodOptions, "/api/v1/files", nil)
@@ -215,7 +217,7 @@ func TestGetConfig(t *testing.T) {
 	t.Run("The extension header must be omitted if the server does not support any extensions", func(t *testing.T) {
 		m := map[string]FileMetadata{}
 		ctrl := NewController(newFakeStore(m),
-			WithExtensions([]string{}),
+			WithExtensions(Extensions{}),
 		)
 
 		req := httptest.NewRequest(http.MethodOptions, "/api/v1/files", nil)
