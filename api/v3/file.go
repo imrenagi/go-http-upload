@@ -6,7 +6,7 @@ import (
 
 type FileMetadata struct {
 	ID           string
-	TotalSize    int64
+	TotalSize    uint64
 	UploadedSize int64
 	Metadata     string
 	ExpiresAt    time.Time

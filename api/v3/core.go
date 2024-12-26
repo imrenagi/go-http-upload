@@ -26,7 +26,6 @@ const (
 	TusChecksumAlgorithmHeader = "Tus-Checksum-Algorithm"
 
 	TusVersion              = "1.0.0"
-	TusMaxSize              = int64(1073741824)
 	UploadOffsetHeader      = "Upload-Offset"
 	UploadLengthHeader      = "Upload-Length"
 	UploadMetadataHeader    = "Upload-Metadata"
@@ -39,7 +38,8 @@ const (
 )
 
 var (
-	SupportedTusExtensions = []string{
+	defaultMaxSize             = uint64(0)
+	defaultSupportedExtensions = []string{
 		"creation",
 		"expiration",
 		"checksum",
@@ -53,9 +53,37 @@ var (
 	}
 )
 
-func NewController(s Storage) Controller {
+type Options struct {
+	Extensions []string
+	MaxSize    uint64
+}
+
+type Option func(*Options)
+
+func WithExtensions(extensions []string) Option {
+	return func(o *Options) {
+		o.Extensions = extensions
+	}
+}
+
+func WithMaxSize(size uint64) Option {
+	return func(o *Options) {
+		o.MaxSize = size
+	}
+}
+
+func NewController(s Storage, opts ...Option) Controller {
+	o := Options{
+		Extensions: defaultSupportedExtensions,
+		MaxSize:    defaultMaxSize,
+	}
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return Controller{
-		store: s,
+		store:      s,
+		extensions: o.Extensions,
+		maxSize:    o.MaxSize,
 	}
 }
 
@@ -65,7 +93,9 @@ type Storage interface {
 }
 
 type Controller struct {
-	store Storage
+	store      Storage
+	extensions []string
+	maxSize    uint64
 }
 
 func TusResumableHeaderCheck(next http.Handler) http.Handler {
@@ -109,14 +139,17 @@ func TusResumableHeaderInjections(next http.Handler) http.Handler {
 
 func (c *Controller) GetConfig() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Add("Cache-Control", "no-store")
-		w.Header().Set(TusResumableHeader, TusVersion)
 		w.Header().Add(TusVersionHeader, strings.Join(SupportedTusVersion, ","))
-		w.Header().Add(TusExtensionHeader, strings.Join(SupportedTusExtensions, ","))
-		w.Header().Add(TusMaxSizeHeader, fmt.Sprint(TusMaxSize))
-		w.Header().Add(TusChecksumAlgorithmHeader, strings.Join(SupportedChecksumAlgorithms, ","))
+		if len(c.extensions) > 0 {
+			w.Header().Add(TusExtensionHeader, strings.Join(c.extensions, ","))
+		}
+		if c.maxSize != 0 {
+			w.Header().Add(TusMaxSizeHeader, fmt.Sprint(c.maxSize))
+		}
+		if strings.Contains(strings.Join(c.extensions, ","), "checksum") {
+			w.Header().Add(TusChecksumAlgorithmHeader, strings.Join(SupportedChecksumAlgorithms, ","))
+		}
 		w.WriteHeader(http.StatusNoContent)
-		w.Write([]byte("GetConfig"))
 	}
 }
 
@@ -336,19 +369,14 @@ func (c *Controller) CreateUpload() http.HandlerFunc {
 		}
 
 		totalLength := r.Header.Get(UploadLengthHeader)
-		totalSize, err := strconv.ParseInt(totalLength, 10, 64)
+		totalSize, err := strconv.ParseUint(totalLength, 10, 64)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("Invalid Upload-Length header"))
 			return
 		}
-		if totalSize < 0 {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Invalid Upload-Length header"))
-			return
-		}
 
-		if totalSize > TusMaxSize {
+		if c.maxSize > 0 && totalSize > c.maxSize {
 			w.WriteHeader(http.StatusRequestEntityTooLarge)
 			w.Write([]byte("Upload-Length exceeds the maximum size"))
 		}

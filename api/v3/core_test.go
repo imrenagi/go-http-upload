@@ -176,3 +176,58 @@ func TestTusResumableHeader(t *testing.T) {
 		assert.Contains(t, []int{http.StatusOK, http.StatusNoContent}, w.Code, "Expected status code %v, got %v", http.StatusOK, w.Code)
 	})
 }
+
+func TestGetConfig(t *testing.T) {
+	t.Run("A successful response indicated by the 204 No Content or 200 OK status MUST contain the Tus-Version header", func(t *testing.T) {
+		m := map[string]FileMetadata{}
+		ctrl := NewController(newFakeStore(m))
+
+		req := httptest.NewRequest(http.MethodOptions, "/api/v1/files", nil)
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files", ctrl.GetConfig())
+		router.ServeHTTP(w, req)
+
+		assert.Contains(t, []int{http.StatusOK, http.StatusNoContent}, w.Code, "Expected status code %v, got %v", http.StatusOK, w.Code)
+		assert.Equal(t, "0.2.0,1.0.0", w.Header().Get(TusVersionHeader))
+		assert.Empty(t, w.Header().Get(TusResumableHeader))
+	})
+
+	t.Run("It MAY include the Tus-Extension and Tus-Max-Size headers.", func(t *testing.T) {
+		m := map[string]FileMetadata{}
+		ctrl := NewController(newFakeStore(m),
+			WithExtensions([]string{"creation", "expiration", "checksum"}),
+			WithMaxSize(1073741824))
+
+		req := httptest.NewRequest(http.MethodOptions, "/api/v1/files", nil)
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files", ctrl.GetConfig())
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, "creation,expiration,checksum", w.Header().Get(TusExtensionHeader))
+		assert.Equal(t, "1073741824", w.Header().Get(TusMaxSizeHeader))
+		assert.Equal(t, "md5", w.Header().Get(TusChecksumAlgorithmHeader))
+	})
+
+	t.Run("The extension header must be omitted if the server does not support any extensions", func(t *testing.T) {
+		m := map[string]FileMetadata{}
+		ctrl := NewController(newFakeStore(m),
+			WithExtensions([]string{}),
+		)
+
+		req := httptest.NewRequest(http.MethodOptions, "/api/v1/files", nil)
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files", ctrl.GetConfig())
+		router.ServeHTTP(w, req)
+
+		assert.Empty(t, w.Header().Get(TusExtensionHeader))
+		assert.Empty(t, w.Header().Get(TusMaxSizeHeader))
+		assert.Empty(t, w.Header().Get(TusChecksumAlgorithmHeader))
+
+	})
+}
