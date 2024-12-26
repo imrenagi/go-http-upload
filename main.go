@@ -6,11 +6,11 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	v1 "github.com/imrenagi/go-http-upload/api/v1"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
-	"github.com/imrenagi/go-http-upload/api/v1"
 )
 
 var meter = otel.Meter("github.com/imrenagi/go-http-uploader")
@@ -76,6 +76,8 @@ func (s *Server) newHTTPHandler() http.Handler {
 	apiRouter := mux.PathPrefix("/api").Subrouter()
 	apiRouter.Handle("/v1/form", otelhttp.WithRouteTag("/api/v1/form", http.HandlerFunc(v1.FormUpload())))
 	apiRouter.Handle("/v1/binary", otelhttp.WithRouteTag("/api/v1/binary", http.HandlerFunc(v1.BinaryUpload())))
+	mux.Handle("/binary-upload", otelhttp.WithRouteTag("/binary-upload", http.HandlerFunc(v1.Web()))).Methods(http.MethodGet)
+
 	handler := otelhttp.NewHandler(mux, "/")
 	return handler
 }
