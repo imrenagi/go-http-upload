@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gorilla/mux"
 	. "github.com/imrenagi/go-http-upload/api/v3"
@@ -353,7 +354,7 @@ func TestResumeUpload(t *testing.T) {
 		}
 		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{}))
 
-		buf := bytes.NewBufferString("ccccc")
+		buf := bytes.NewBufferString("ccc")
 		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", buf)
 		req.Header.Set("Content-Type", "application/offset+octet-stream")
 		req.Header.Set("Upload-Offset", "0")
@@ -364,6 +365,123 @@ func TestResumeUpload(t *testing.T) {
 		router.ServeHTTP(w, req)
 
 		assert.Equal(t, http.StatusNoContent, w.Code)
-		assert.Equal(t, "5", w.Header().Get(UploadOffsetHeader))
+		assert.Equal(t, "3", w.Header().Get(UploadOffsetHeader))
 	})
+}
+
+func TestExpiration(t *testing.T) {
+	t.Run("The expiration header may be included in the HEAD response when the upload is going to expire.", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    5,
+				ExpiresAt:    time.Now().Add(1 * time.Hour),
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{ExpirationExtension}))
+
+		req := httptest.NewRequest(http.MethodHead, "/api/v1/files/a", nil)
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.GetOffset())
+		router.ServeHTTP(w, req)
+
+		format := "Mon, 02 Jan 2006 15:04:05 GMT"
+		ts := w.Header().Get(UploadExpiresHeader)
+		tt, err := time.Parse(format, ts)
+		assert.NoError(t, err)
+
+		assert.Equal(t, m["a"].ExpiresAt.Format(format), tt.Format(format))
+	})
+
+	t.Run("the Server SHOULD respond with 410 Gone status if the Server is keeping track of expired uploads", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    5,
+				ExpiresAt:    time.Now().Add(-1 * time.Hour),
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{ExpirationExtension}))
+
+		req := httptest.NewRequest(http.MethodHead, "/api/v1/files/a", nil)
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.GetOffset())
+		router.ServeHTTP(w, req)
+
+		format := "Mon, 02 Jan 2006 15:04:05 GMT"
+		ts := w.Header().Get(UploadExpiresHeader)
+		tt, err := time.Parse(format, ts)
+		assert.NoError(t, err)
+		assert.Equal(t, m["a"].ExpiresAt.Format(format), tt.Format(format))
+		assert.Equal(t, http.StatusGone, w.Code)
+	})
+
+	t.Run("This header MUST be included in every PATCH response if the upload is going to expire.", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    5,
+				ExpiresAt:    time.Now().Add(1 * time.Hour),
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{ExpirationExtension}))
+
+		buf := bytes.NewBufferString("ccc")
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", buf)
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		req.Header.Set("Upload-Offset", "0")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNoContent, w.Code)
+		assert.Equal(t, "3", w.Header().Get(UploadOffsetHeader))
+
+		format := "Mon, 02 Jan 2006 15:04:05 GMT"
+		ts := w.Header().Get(UploadExpiresHeader)
+		tt, err := time.Parse(format, ts)
+		assert.NoError(t, err)
+		assert.Equal(t, m["a"].ExpiresAt.Format(format), tt.Format(format))
+	})
+
+	t.Run("If a Client does attempt to resume an upload which has since been removed by the Server, the Server SHOULD respond with 410 Gone status", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    5,
+				ExpiresAt:    time.Now().Add(-1 * time.Hour),
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{ExpirationExtension}))
+
+		buf := bytes.NewBufferString("ccc")
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", buf)
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		req.Header.Set("Upload-Offset", "0")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusGone, w.Code)
+		assert.Empty(t, w.Header().Get(UploadOffsetHeader))
+		assert.Empty(t, w.Header().Get(UploadExpiresHeader))
+		assert.Equal(t, `{"message":"file expired"}`, w.Body.String())
+
+	})
+}
+
+func TestChecksum(t *testing.T) {
+	
 }

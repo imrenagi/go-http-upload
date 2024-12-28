@@ -196,12 +196,6 @@ func (c *Controller) GetOffset() http.HandlerFunc {
 			return
 		}
 
-		if !fm.ExpiresAt.IsZero() && fm.ExpiresAt.Before(time.Now()) {
-			w.WriteHeader(http.StatusGone)
-			w.Write([]byte("File expired"))
-			return
-		}
-
 		w.Header().Add(UploadOffsetHeader, fmt.Sprint(fm.UploadedSize))
 		w.Header().Add(UploadLengthHeader, fmt.Sprint(fm.TotalSize))
 		w.Header().Add("Cache-Control", "no-store")
@@ -211,6 +205,13 @@ func (c *Controller) GetOffset() http.HandlerFunc {
 		if !fm.ExpiresAt.IsZero() {
 			w.Header().Add(UploadExpiresHeader, uploadExpiresAt(fm.ExpiresAt))
 		}
+
+		if !fm.ExpiresAt.IsZero() && fm.ExpiresAt.Before(time.Now()) {
+			log.Debug().Str("file_id", fileID).Msg("file expired")
+			writeError(w, http.StatusGone, errors.New("file expired"))
+			return
+		}
+
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -304,8 +305,8 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 		}
 
 		if c.extensions.Enabled(ExpirationExtension) && fm.ExpiresAt.Before(time.Now()) {
-			w.WriteHeader(http.StatusGone)
-			w.Write([]byte("File expired"))
+			log.Debug().Str("file_id", fileID).Msg("file expired")
+			writeError(w, http.StatusGone, errors.New("file expired"))
 			return
 		}
 
@@ -360,7 +361,7 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 		n, err := io.Copy(f, rd2)
 		if err != nil {
 			log.Error().Err(err).Msg("error writing the file")
-			writeError(w, http.StatusInternalServerError, errors.New("error writing the file"))			
+			writeError(w, http.StatusInternalServerError, errors.New("error writing the file"))
 			return
 		}
 
