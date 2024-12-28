@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -257,31 +259,29 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 		fileID := vars["file_id"]
 		log.Debug().Str("file_id", fileID).Msg("Check request path and query")
 
-		checksum, err := newChecksum(r.Header.Get(UploadChecksumHeader))
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(err.Error()))
-			return
+		var checksum checksum
+		if c.extensions.Enabled(ChecksumExtension) {
+			var err error
+			checksum, err = newChecksum(r.Header.Get(UploadChecksumHeader))
+			if err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte(err.Error()))
+				return
+			}
 		}
 
 		uploadOffset := r.Header.Get(UploadOffsetHeader)
 		offset, err := strconv.ParseInt(uploadOffset, 10, 64)
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Invalid Upload-Offset header"))
+			log.Debug().Err(err).
+				Str("upload_offset", uploadOffset).
+				Msg("Invalid Upload-Offset header: not a number")
+			writeError(w, http.StatusBadRequest, errors.New("invalid Upload-Offset header: not a number"))
 			return
 		}
 		if offset < 0 {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Invalid Upload-Offset header"))
-			return
-		}
-
-		contentLength := r.Header.Get("Content-Length")
-		length, err := strconv.ParseInt(contentLength, 10, 64)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Invalid Content-Length header"))
+			log.Debug().Str("upload_offset", uploadOffset).Msg("Invalid Upload-Offset header: negative value")
+			writeError(w, http.StatusBadRequest, errors.New("invalid Upload-Offset header: negative value"))
 			return
 		}
 
@@ -291,35 +291,35 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			Msg("Check request header")
 
 		if contentType != "application/offset+octet-stream" {
-			w.WriteHeader(http.StatusUnsupportedMediaType)
-			w.Write([]byte("only application/offset+octet-stream is supported"))
+			log.Debug().Str("content_type", contentType).Msg("Invalid Content-Type")
+			writeError(w, http.StatusUnsupportedMediaType, errors.New("invalid Content-Type header: expected application/offset+octet-stream"))
 			return
 		}
 
 		fm, ok := c.store.Find(fileID)
 		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte("File not found"))
+			log.Debug().Str("file_id", fileID).Msg("file not found")
+			writeError(w, http.StatusNotFound, errors.New("file not found"))
 			return
 		}
 
-		if fm.ExpiresAt.Before(time.Now()) {
+		if c.extensions.Enabled(ExpirationExtension) && fm.ExpiresAt.Before(time.Now()) {
 			w.WriteHeader(http.StatusGone)
 			w.Write([]byte("File expired"))
 			return
 		}
 
 		if offset != fm.UploadedSize {
-			w.WriteHeader(http.StatusConflict)
-			w.Write([]byte("Upload-Offset header does not match the current offset"))
+			log.Debug().Msg("upload-Offset header does not match the current offset")
+			writeError(w, http.StatusConflict, errors.New("upload-Offset header does not match the current offset"))
 			return
 		}
 
 		// Create a copy of the request body using TeeReader
 		buf, err := io.ReadAll(r.Body)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Error copying the request body"))
+			log.Error().Err(err).Msg("Error copying the request body")
+			writeError(w, http.StatusInternalServerError, errors.New("error copying the request body"))
 			return
 		}
 		rd1 := io.NopCloser(bytes.NewBuffer(buf))
@@ -328,7 +328,7 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 		defer rd1.Close()
 		defer rd2.Close()
 
-		if checksum.Algorithm != "" {
+		if c.extensions.Enabled(ChecksumExtension) && checksum.Algorithm != "" {
 			ok, err := checksum.equal(rd1)
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
@@ -344,23 +344,23 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 
 		f, err := os.OpenFile(filepath.Join("/tmp", fm.ID), os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Error Retrieving the File"))
+			log.Error().Err(err).Msg("error opening the file")
+			writeError(w, http.StatusBadRequest, errors.New("error opening the file"))
 			return
 		}
 		defer f.Close()
 
 		_, err = f.Seek(offset, 0)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Error Seeking the File"))
+			log.Error().Err(err).Msg("error seeking the File")
+			writeError(w, http.StatusInternalServerError, errors.New("error seeking the file"))
 			return
 		}
 
 		n, err := io.Copy(f, rd2)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Error writing file"))
+			log.Error().Err(err).Msg("error writing the file")
+			writeError(w, http.StatusInternalServerError, errors.New("error writing the file"))			
 			return
 		}
 
@@ -369,7 +369,7 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			Str("stored_file", f.Name()).
 			Msg("File Uploaded")
 
-		fm.UploadedSize += length
+		fm.UploadedSize += n
 		c.store.Save(fm.ID, fm)
 
 		w.Header().Add(UploadOffsetHeader, fmt.Sprint(fm.UploadedSize))
@@ -377,7 +377,6 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			w.Header().Add(UploadExpiresHeader, uploadExpiresAt(fm.ExpiresAt))
 		}
 		w.WriteHeader(http.StatusNoContent)
-		w.Write([]byte("ResumeUpload"))
 	}
 }
 
@@ -432,4 +431,16 @@ func (c *Controller) CreateUpload() http.HandlerFunc {
 
 func uploadExpiresAt(t time.Time) string {
 	return t.Format("Mon, 02 Jan 2006 15:04:05 GMT")
+}
+
+type cError struct {
+	Message string `json:"message"`
+}
+
+func writeError(w http.ResponseWriter, code int, err error) {
+	w.WriteHeader(code)
+
+	b, _ := json.Marshal(cError{Message: err.Error()})
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
 }

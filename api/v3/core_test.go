@@ -1,6 +1,7 @@
 package v3_test
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -231,5 +232,138 @@ func TestGetConfig(t *testing.T) {
 		assert.Empty(t, w.Header().Get(TusMaxSizeHeader))
 		assert.Empty(t, w.Header().Get(TusChecksumAlgorithmHeader))
 
+	})
+}
+
+func TestResumeUpload(t *testing.T) {
+
+	t.Run("Upload-Offset must be included in the request", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    10,
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{}))
+
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", nil)
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Equal(t, `{"message":"invalid Upload-Offset header: not a number"}`, w.Body.String())
+	})
+
+	t.Run("Upload-Offset must be included in the request with value gte 0", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    10,
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{}))
+
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", nil)
+		req.Header.Set("Upload-Offset", "-1")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Equal(t, `{"message":"invalid Upload-Offset header: negative value"}`, w.Body.String())
+	})
+
+	t.Run("When PATCH requests doesnt use Content-Type: application/offset+octet-stream, server SHOULD return a 415 Unsupported Media Type status", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    10,
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{}))
+
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", nil)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Upload-Offset", "0")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusUnsupportedMediaType, w.Code)
+		assert.Equal(t, `{"message":"invalid Content-Type header: expected application/offset+octet-stream"}`, w.Body.String())
+	})
+
+	t.Run("If the server receives a PATCH request against a non-existent resource it SHOULD return a 404 Not Found status.", func(t *testing.T) {
+		m := map[string]FileMetadata{}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{}))
+
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", nil)
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		req.Header.Set("Upload-Offset", "0")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNotFound, w.Code)
+		assert.Equal(t, `{"message":"file not found"}`, w.Body.String())
+	})
+
+	t.Run(" If the offsets do not match, the Server MUST respond with the 409 Conflict status without modifying the upload resource.", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    10,
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{}))
+
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", nil)
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		req.Header.Set("Upload-Offset", "10")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusConflict, w.Code)
+		assert.Equal(t, `{"message":"upload-Offset header does not match the current offset"}`, w.Body.String())
+	})
+
+	t.Run("The Server MUST acknowledge successful PATCH requests with the 204 No Content status. It MUST include the Upload-Offset header containing the new offset", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    5,
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{}))
+
+		buf := bytes.NewBufferString("ccccc")
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", buf)
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		req.Header.Set("Upload-Offset", "0")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNoContent, w.Code)
+		assert.Equal(t, "5", w.Header().Get(UploadOffsetHeader))
 	})
 }
