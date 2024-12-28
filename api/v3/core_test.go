@@ -213,7 +213,7 @@ func TestGetConfig(t *testing.T) {
 
 		assert.Equal(t, "creation,expiration,checksum", w.Header().Get(TusExtensionHeader))
 		assert.Equal(t, "1073741824", w.Header().Get(TusMaxSizeHeader))
-		assert.Equal(t, "md5", w.Header().Get(TusChecksumAlgorithmHeader))
+		assert.Equal(t, "sha1,md5", w.Header().Get(TusChecksumAlgorithmHeader))
 	})
 
 	t.Run("The extension header must be omitted if the server does not support any extensions", func(t *testing.T) {
@@ -483,5 +483,128 @@ func TestExpiration(t *testing.T) {
 }
 
 func TestChecksum(t *testing.T) {
-	
+	t.Run("The Upload-Checksum header MUST consist of the name of the used checksum algorithm and the Base64 encoded checksum separated by a space.", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    1,
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{ChecksumExtension}))
+
+		buf := bytes.NewBufferString("1")
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", buf)
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		req.Header.Set("Upload-Offset", "0")
+		req.Header.Set("Upload-Checksum", "md5 c4ca4238a0b923820dcc509a6f75849b")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNoContent, w.Code)
+		assert.Equal(t, "1", w.Header().Get(UploadOffsetHeader))
+	})
+
+	t.Run("The Server MUST support at least the SHA1 checksum algorithm identified by sha1", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    1,
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{ChecksumExtension}))
+
+		buf := bytes.NewBufferString("1")
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", buf)
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		req.Header.Set("Upload-Offset", "0")
+		req.Header.Set("Upload-Checksum", "sha1 356a192b7913b04c54574d18c28d46e6395428ab")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusNoContent, w.Code)
+		assert.Equal(t, "1", w.Header().Get(UploadOffsetHeader))
+	})
+
+	t.Run("Patch must failed when The Upload-Checksum header only has 1 segment", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    1,
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{ChecksumExtension}))
+
+		buf := bytes.NewBufferString("1")
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", buf)
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		req.Header.Set("Upload-Offset", "0")
+		req.Header.Set("Upload-Checksum", "c4ca4238a0b923820dcc509a6f75849b")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Equal(t, `{"message":"invalid checksum format"}`, w.Body.String())
+	})
+
+	t.Run("Patch must failed when The Upload-Checksum header use unsupported hash algorithm", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    1,
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{ChecksumExtension}))
+
+		buf := bytes.NewBufferString("1")
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", buf)
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		req.Header.Set("Upload-Offset", "0")
+		req.Header.Set("Upload-Checksum", "sha256 c4ca4238a0b923820dcc509a6f75849b")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, http.StatusBadRequest, w.Code)
+		assert.Equal(t, `{"message":"unsupported checksum algorithm"}`, w.Body.String())
+	})
+
+	t.Run("Patch must failed when The checksum value not matched", func(t *testing.T) {
+		m := map[string]FileMetadata{
+			"a": {
+				ID:           "a",
+				UploadedSize: 0,
+				TotalSize:    1,
+			},
+		}
+		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{ChecksumExtension}))
+
+		buf := bytes.NewBufferString("1")
+		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", buf)
+		req.Header.Set("Content-Type", "application/offset+octet-stream")
+		req.Header.Set("Upload-Offset", "0")
+		req.Header.Set("Upload-Checksum", "md5 c4ca4238a0b923820dcc509a6f758495")
+		w := httptest.NewRecorder()
+
+		router := mux.NewRouter()
+		router.HandleFunc("/api/v1/files/{file_id}", ctrl.ResumeUpload()).Methods(http.MethodPatch)
+		router.ServeHTTP(w, req)
+
+		assert.Equal(t, 460, w.Code)
+		assert.Equal(t, `{"message":"checksum mismatch"}`, w.Body.String())
+	})
 }

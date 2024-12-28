@@ -3,6 +3,7 @@ package v3
 import (
 	"bytes"
 	"crypto/md5"
+	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -80,6 +81,7 @@ var (
 		"1.0.0",
 	}
 	SupportedChecksumAlgorithms = []string{
+		"sha1",
 		"md5",
 	}
 )
@@ -224,7 +226,7 @@ func newChecksum(value string) (checksum, error) {
 	if len(d) != 2 {
 		return checksum{}, fmt.Errorf("invalid checksum format")
 	}
-	if d[0] != "md5" {
+	if d[0] != "md5" && d[0] != "sha1" {
 		return checksum{}, fmt.Errorf("unsupported checksum algorithm")
 	}
 	return checksum{
@@ -239,15 +241,34 @@ type checksum struct {
 }
 
 func (c checksum) equal(file io.Reader) (bool, error) {
-	hash, err := c.calculateChecksum(file)
+	var hash string
+	var err error
+	if c.Algorithm == "md5" {
+		hash, err = c.calculateMD5Checksum(file)
+	} else if c.Algorithm == "sha1" {
+		hash, err = c.calculateSha1Checksum(file)
+	} else {
+		return false, fmt.Errorf("unsupported checksum algorithm")
+	}
 	if err != nil {
 		return false, err
 	}
+	log.Debug().Str("checksum", hash).Msg("Calculated checksum")
 	return hash == c.Value, nil
 }
 
-func (c checksum) calculateChecksum(file io.Reader) (string, error) {
+func (c checksum) calculateMD5Checksum(file io.Reader) (string, error) {
 	hash := md5.New()
+	// TODO used bytes buffer to avoid reading the big file
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func (c checksum) calculateSha1Checksum(file io.Reader) (string, error) {
+	hash := sha1.New()
+	// TODO used bytes buffer to avoid reading the big file
 	if _, err := io.Copy(hash, file); err != nil {
 		return "", err
 	}
@@ -265,8 +286,8 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			var err error
 			checksum, err = newChecksum(r.Header.Get(UploadChecksumHeader))
 			if err != nil {
-				w.WriteHeader(http.StatusBadRequest)
-				w.Write([]byte(err.Error()))
+				log.Debug().Err(err).Msg("Invalid checksum header")
+				writeError(w, http.StatusBadRequest, err)
 				return
 			}
 		}
@@ -329,16 +350,18 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 		defer rd1.Close()
 		defer rd2.Close()
 
+		// checking sum here so that we can just directly discard the data
+		// if the checksum does not match
 		if c.extensions.Enabled(ChecksumExtension) && checksum.Algorithm != "" {
 			ok, err := checksum.equal(rd1)
 			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte("Error calculating checksum"))
+				log.Error().Err(err).Msg("Error calculating checksum")
+				writeError(w, http.StatusInternalServerError, errors.New("error calculating checksum"))
 				return
 			}
 			if !ok {
-				w.WriteHeader(http.StatusBadRequest) // checksum mismatch
-				w.Write([]byte("Checksum mismatch"))
+				log.Debug().Msg("Checksum mismatch")
+				writeError(w, 460, errors.New("checksum mismatch"))
 				return
 			}
 		}
