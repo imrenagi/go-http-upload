@@ -14,8 +14,16 @@ func FormUpload() http.HandlerFunc {
 		// log content type
 		log.Debug().Str("content_type", r.Header.Get("Content-Type")).Msg("Request Content Type")
 
+		// limit the size of the request body
+		r.Body = http.MaxBytesReader(w, r.Body, 10<<20) //10MB
 		// parse the form
-		r.ParseMultipartForm(10 << 20)
+		if err := r.ParseMultipartForm(5 << 20); err != nil {
+			log.Error().Err(err).Msg("Error Parsing the Form")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		defer r.MultipartForm.RemoveAll()
+
 		// get a handle to the file
 		file, handler, err := r.FormFile("file")
 		if err != nil {
@@ -27,12 +35,13 @@ func FormUpload() http.HandlerFunc {
 		defer file.Close()
 
 		// convert handler.size to KB
-		f, err := os.CreateTemp("", "sample")
+		f, err := os.CreateTemp("/tmp", "sample-")
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			w.Write([]byte("Error Retrieving the File"))
 			return
 		}
+
 		defer f.Close()
 		defer os.Remove(f.Name())
 
@@ -48,12 +57,15 @@ func FormUpload() http.HandlerFunc {
 			Msg("File Uploaded")
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("File Uploaded Successfully"))
 	}
 }
 
 func BinaryUpload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// limit the size of the request body
+		r.Body = http.MaxBytesReader(w, r.Body, 10<<20) //10MB
+
+		defer r.Body.Close()
 		contentType := r.Header.Get("Content-Type")
 		contentLength := r.Header.Get("Content-Length")
 		fileName := r.Header.Get("X-Api-File-Name")
@@ -63,10 +75,6 @@ func BinaryUpload() http.HandlerFunc {
 			Str("file_name", fileName).
 			Msg("received binary data")
 
-		// Read the binary data from the request body
-		file := r.Body
-		defer file.Close()
-
 		f, err := os.OpenFile(filepath.Join("/tmp", fileName), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -74,8 +82,8 @@ func BinaryUpload() http.HandlerFunc {
 			return
 		}
 		defer f.Close()
-		// defer os.Remove(f.Name())
-		n, err := io.Copy(f, file)
+		defer os.Remove(f.Name())
+		n, err := io.Copy(f, r.Body)
 		if err != nil {
 			log.Error().Err(err).Msg("Error Copying the File")
 		}
@@ -86,6 +94,5 @@ func BinaryUpload() http.HandlerFunc {
 			Msg("File Uploaded")
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("File Uploaded Successfully"))
 	}
 }

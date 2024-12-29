@@ -277,6 +277,7 @@ func (c checksum) calculateSha1Checksum(file io.Reader) (string, error) {
 
 func (c *Controller) ResumeUpload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 10<<20) //10MB
 		vars := mux.Vars(r)
 		fileID := vars["file_id"]
 		log.Debug().Str("file_id", fileID).Msg("Check request path and query")
@@ -365,8 +366,8 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 				return
 			}
 		}
-
-		f, err := os.OpenFile(filepath.Join("/tmp", fm.ID), os.O_CREATE|os.O_WRONLY, 0644)
+		
+		f, err := os.OpenFile(fm.FilePath(), os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Error().Err(err).Msg("error opening the file")
 			writeError(w, http.StatusBadRequest, errors.New("error opening the file"))
@@ -436,11 +437,22 @@ func (c *Controller) CreateUpload() http.HandlerFunc {
 		uploadMetadata := r.Header.Get(UploadMetadataHeader)
 		log.Debug().Str("upload_metadata", uploadMetadata).Msg("Check request header")
 
+		fileId := uuid.New().String()
+
+		f, err := os.Create(filepath.Join("/tmp", fileId))
+		if err != nil {
+			log.Error().Err(err).Msg("error creating the file")
+			writeError(w, http.StatusInternalServerError, errors.New("error creating the file"))
+			return
+		}
+		defer f.Close()
+
 		fm := FileMetadata{
 			ID:        uuid.New().String(),
 			TotalSize: totalSize,
 			Metadata:  uploadMetadata,
 			ExpiresAt: time.Now().Add(UploadMaxDuration),
+			Path:      f.Name(),
 		}
 		c.store.Save(fm.ID, fm)
 

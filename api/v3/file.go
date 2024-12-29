@@ -10,4 +10,12 @@ type FileMetadata struct {
 	UploadedSize int64
 	Metadata     string
 	ExpiresAt    time.Time
+	Path         string
+}
+
+func (f FileMetadata) FilePath() string {
+	if f.Path == "" {
+		return "/tmp/" + f.ID
+	}
+	return f.Path
 }
