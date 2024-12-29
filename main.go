@@ -73,7 +73,7 @@ func (s *Server) newHTTPHandler() http.Handler {
 	mux.Use(
 		otelhttp.NewMiddleware("uploader"),
 		LogInterceptor)
-	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/metrics", otelhttp.WithRouteTag("/metrics", promhttp.Handler()))
 	apiRouter := mux.PathPrefix("/api").Subrouter()
 
 	apiV1Router := apiRouter.PathPrefix("/v1").Subrouter()

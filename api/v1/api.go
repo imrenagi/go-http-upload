@@ -34,14 +34,14 @@ func FormUpload() http.HandlerFunc {
 			return
 		}
 		defer f.Close()
-		// defer os.Remove(f.Name())
+		defer os.Remove(f.Name())
 
 		n, err := io.Copy(f, file)
 		if err != nil {
 			log.Error().Err(err).Msg("Error Copying the File")
 		}
 
-		log.Debug().Str("file_name", handler.Filename).
+		log.Info().Str("file_name", handler.Filename).
 			Int64("file_size", handler.Size).
 			Int64("written_size", n).
 			Str("stored_file", f.Name()).
@@ -80,7 +80,7 @@ func BinaryUpload() http.HandlerFunc {
 			log.Error().Err(err).Msg("Error Copying the File")
 		}
 
-		log.Debug().
+		log.Info().
 			Int64("written_size", n).
 			Str("stored_file", f.Name()).
 			Msg("File Uploaded")

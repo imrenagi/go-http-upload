@@ -1,0 +1,5 @@
+locust==2.19.0
+pandas
+matplotlib
+numpy
+seaborn
