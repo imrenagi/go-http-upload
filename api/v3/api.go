@@ -1,17 +1,17 @@
 package v3
 
 import (
-	"bytes"
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
+	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -240,44 +240,10 @@ type checksum struct {
 	Value     string
 }
 
-func (c checksum) equal(file io.Reader) (bool, error) {
-	var hash string
-	var err error
-	if c.Algorithm == "md5" {
-		hash, err = c.calculateMD5Checksum(file)
-	} else if c.Algorithm == "sha1" {
-		hash, err = c.calculateSha1Checksum(file)
-	} else {
-		return false, fmt.Errorf("unsupported checksum algorithm")
-	}
-	if err != nil {
-		return false, err
-	}
-	log.Debug().Str("checksum", hash).Msg("Calculated checksum")
-	return hash == c.Value, nil
-}
-
-func (c checksum) calculateMD5Checksum(file io.Reader) (string, error) {
-	hash := md5.New()
-	// TODO used bytes buffer to avoid reading the big file
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-func (c checksum) calculateSha1Checksum(file io.Reader) (string, error) {
-	hash := sha1.New()
-	// TODO used bytes buffer to avoid reading the big file
-	if _, err := io.Copy(hash, file); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-
 func (c *Controller) ResumeUpload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		r.Body = http.MaxBytesReader(w, r.Body, 10<<20) //10MB
+
+		// r.Body = http.MaxBytesReader(w, r.Body, 10<<20) //10MB
 		vars := mux.Vars(r)
 		fileID := vars["file_id"]
 		log.Debug().Str("file_id", fileID).Msg("Check request path and query")
@@ -319,6 +285,8 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			return
 		}
 
+		log.Debug().Msg("find the file metadata")
+
 		fm, ok := c.store.Find(fileID)
 		if !ok {
 			log.Debug().Str("file_id", fileID).Msg("file not found")
@@ -338,55 +306,90 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			return
 		}
 
-		// Create a copy of the request body using TeeReader
-		buf, err := io.ReadAll(r.Body)
-		if err != nil {
-			log.Error().Err(err).Msg("Error copying the request body")
-			writeError(w, http.StatusInternalServerError, errors.New("error copying the request body"))
-			return
-		}
-		rd1 := io.NopCloser(bytes.NewBuffer(buf))
-		rd2 := io.NopCloser(bytes.NewBuffer(buf))
-		defer r.Body.Close()
-		defer rd1.Close()
-		defer rd2.Close()
-
-		// checking sum here so that we can just directly discard the data
-		// if the checksum does not match
-		if c.extensions.Enabled(ChecksumExtension) && checksum.Algorithm != "" {
-			ok, err := checksum.equal(rd1)
-			if err != nil {
-				log.Error().Err(err).Msg("Error calculating checksum")
-				writeError(w, http.StatusInternalServerError, errors.New("error calculating checksum"))
-				return
-			}
-			if !ok {
-				log.Debug().Msg("Checksum mismatch")
-				writeError(w, 460, errors.New("checksum mismatch"))
-				return
-			}
-		}
-		
-		f, err := os.OpenFile(fm.FilePath(), os.O_CREATE|os.O_WRONLY, 0644)
+		f, err := os.OpenFile(fm.FilePath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			log.Error().Err(err).Msg("error opening the file")
 			writeError(w, http.StatusBadRequest, errors.New("error opening the file"))
 			return
 		}
 		defer f.Close()
+		log.Debug().Str("stored_file", f.Name()).Msg("File Opened")
 
-		_, err = f.Seek(offset, 0)
+		// Store the current position before writing
+		originalPos, err := f.Seek(0, io.SeekEnd)
 		if err != nil {
-			log.Error().Err(err).Msg("error seeking the File")
-			writeError(w, http.StatusInternalServerError, errors.New("error seeking the file"))
+			log.Error().Err(err).Msg("error getting file position")
+			writeError(w, http.StatusInternalServerError, errors.New("error preparing file"))
 			return
 		}
 
-		n, err := io.Copy(f, rd2)
-		if err != nil {
-			log.Error().Err(err).Msg("error writing the file")
-			writeError(w, http.StatusInternalServerError, errors.New("error writing the file"))
-			return
+		var n int64
+		if c.extensions.Enabled(ChecksumExtension) && checksum.Algorithm != "" {
+			var hash hash.Hash
+			switch checksum.Algorithm {
+			case "md5":
+				hash = md5.New()
+			case "sha1":
+				hash = sha1.New()
+			default:
+				writeError(w, http.StatusBadRequest, errors.New("unsupported checksum algorithm"))
+				return
+			}
+
+			log.Debug().Msg("write the data to the file")
+
+			reader := io.TeeReader(r.Body, hash)
+			n, err = io.Copy(f, reader)
+			if err != nil {
+				// Revert to original position on error
+				f.Seek(originalPos, io.SeekStart)
+				f.Truncate(originalPos) // Ensure file is truncated to original size
+
+				log.Error().Err(err).Msg("error writing file")
+				writeError(w, http.StatusInternalServerError, errors.New("error writing file"))
+				return
+			}
+
+			cur, _ := f.Seek(0, io.SeekCurrent)
+
+			log.Debug().
+				Int64("written_size", n).
+				Int64("cur", cur).
+				Msg("temporary data has been written, but not flushed")
+
+			log.Debug().Msg("validate the checksum")
+
+			calculatedHash := hex.EncodeToString(hash.Sum(nil))
+			if calculatedHash != checksum.Value {
+				// Revert to original position if checksum fails
+				f.Seek(originalPos, io.SeekStart)
+				f.Truncate(originalPos) // Ensure file is truncated to original size
+				log.Debug().Msg("Checksum mismatch")
+				writeError(w, 460, errors.New("checksum mismatch"))
+				return
+			}
+
+			fm.UploadedSize += n
+			c.store.Save(fm.ID, fm)
+		} else {
+			n, err = io.Copy(f, r.Body)
+			if err != nil {
+				fm.UploadedSize += n
+				c.store.Save(fm.ID, fm)
+
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
+					log.Warn().Err(err).Msg("network timeout while writing file")
+					writeError(w, http.StatusRequestTimeout, fmt.Errorf("network timeout: %w", err))
+					return
+				}
+
+				log.Error().Err(err).Msg("error writing the file")
+				writeError(w, http.StatusInternalServerError, fmt.Errorf("error writing the file: %w", err))
+				return
+			}
+			fm.UploadedSize += n
+			c.store.Save(fm.ID, fm)
 		}
 
 		log.Debug().
@@ -394,9 +397,7 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			Str("stored_file", f.Name()).
 			Msg("File Uploaded")
 
-		fm.UploadedSize += n
-		c.store.Save(fm.ID, fm)
-
+		log.Debug().Msg("prepare the response header")
 		w.Header().Add(UploadOffsetHeader, fmt.Sprint(fm.UploadedSize))
 		if !fm.ExpiresAt.IsZero() {
 			w.Header().Add(UploadExpiresHeader, uploadExpiresAt(fm.ExpiresAt))
@@ -421,6 +422,7 @@ func (c *Controller) CreateUpload() http.HandlerFunc {
 			return
 		}
 
+		// TODO doesn't this upload length optional?
 		totalLength := r.Header.Get(UploadLengthHeader)
 		totalSize, err := strconv.ParseUint(totalLength, 10, 64)
 		if err != nil {
@@ -437,22 +439,11 @@ func (c *Controller) CreateUpload() http.HandlerFunc {
 		uploadMetadata := r.Header.Get(UploadMetadataHeader)
 		log.Debug().Str("upload_metadata", uploadMetadata).Msg("Check request header")
 
-		fileId := uuid.New().String()
-
-		f, err := os.Create(filepath.Join("/tmp", fileId))
-		if err != nil {
-			log.Error().Err(err).Msg("error creating the file")
-			writeError(w, http.StatusInternalServerError, errors.New("error creating the file"))
-			return
-		}
-		defer f.Close()
-
 		fm := FileMetadata{
 			ID:        uuid.New().String(),
 			TotalSize: totalSize,
 			Metadata:  uploadMetadata,
 			ExpiresAt: time.Now().Add(UploadMaxDuration),
-			Path:      f.Name(),
 		}
 		c.store.Save(fm.ID, fm)
 

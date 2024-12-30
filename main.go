@@ -42,6 +42,13 @@ func (s *Server) Run(ctx context.Context) error {
 	httpServer := &http.Server{
 		Addr:    ":8080",
 		Handler: s.newHTTPHandler(),
+		// ReadTimeout is necessary here to prevent slowloris attacks.
+		// https://www.cloudflare.com/learning/ddos/ddos-attack-tools/slowloris/
+		// This is also useful when clients is already canceling the request, but the server is still holding the connection.
+		ReadTimeout:       3 * time.Second,
+		ReadHeaderTimeout: 3 * time.Second,
+		WriteTimeout:      3 * time.Second,
+		IdleTimeout:       5 * time.Second,
 	}
 
 	go func() {
@@ -73,7 +80,7 @@ func (s *Server) newHTTPHandler() http.Handler {
 	mux.Use(
 		otelhttp.NewMiddleware("uploader"),
 		LogInterceptor)
-	mux.Handle("/metrics", otelhttp.WithRouteTag("/metrics", promhttp.Handler()))
+	mux.Handle("/metrics", promhttp.Handler())
 	apiRouter := mux.PathPrefix("/api").Subrouter()
 
 	apiV1Router := apiRouter.PathPrefix("/v1").Subrouter()
@@ -89,8 +96,7 @@ func (s *Server) newHTTPHandler() http.Handler {
 	apiV3Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v3/files/{file_id}", http.HandlerFunc(v3Controller.GetOffset()))).Methods(http.MethodHead)
 	apiV3Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v3/files/{file_id}", http.HandlerFunc(v3Controller.ResumeUpload()))).Methods(http.MethodPatch)
 
-	handler := otelhttp.NewHandler(mux, "/")
-	return handler
+	return otelhttp.NewHandler(mux, "/")
 }
 
 func main() {

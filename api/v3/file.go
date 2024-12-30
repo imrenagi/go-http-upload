@@ -15,7 +15,7 @@ type FileMetadata struct {
 
 func (f FileMetadata) FilePath() string {
 	if f.Path == "" {
-		return "/tmp/" + f.ID
+		return "/tmp/file-upload-" + f.ID
 	}
 	return f.Path
 }
