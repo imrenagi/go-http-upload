@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -14,12 +14,12 @@ import (
 	"go.opentelemetry.io/otel"
 )
 
-var meter = otel.Meter("github.com/imrenagi/go-http-upload")
+var meter = otel.Meter("github.com/imrenagi/go-http-upload/server")
 
-type ServerOpts struct {
+type Opts struct {
 }
 
-func NewServer(opts ServerOpts) Server {
+func New(opts Opts) Server {
 	s := Server{
 		opts: opts,
 	}
@@ -27,7 +27,7 @@ func NewServer(opts ServerOpts) Server {
 }
 
 type Server struct {
-	opts ServerOpts
+	opts Opts
 }
 
 // Run runs the gRPC-Gateway, dialing the provided address.
@@ -97,15 +97,4 @@ func (s *Server) newHTTPHandler() http.Handler {
 	apiV3Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v3/files/{file_id}", http.HandlerFunc(v3Controller.ResumeUpload()))).Methods(http.MethodPatch)
 
 	return otelhttp.NewHandler(mux, "/")
-}
-
-func main() {
-	ctx := context.Background()
-	// Initialize the logger
-	_ = InitializeLogger("debug")
-
-	server := NewServer(ServerOpts{})
-	if err := server.Run(ctx); err != nil {
-		log.Fatal().Err(err).Msg("failed to run the server")
-	}
 }
