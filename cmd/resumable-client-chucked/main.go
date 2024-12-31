@@ -15,6 +15,7 @@ import (
 )
 
 func main() {
+	const chunkSize int64 = 32 * 1024 * 1024 // 64MB chunks
 
 	stdOut := zerolog.ConsoleWriter{Out: os.Stdout}
 	writers := []io.Writer{stdOut}
@@ -26,10 +27,10 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("Error opening file")
 	}
-	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil {
+		f.Close()
 		log.Fatal().Err(err).Msg("Error getting file info")
 	}
 	fileSize := fi.Size()
@@ -37,11 +38,14 @@ func main() {
 
 	req, err := http.NewRequest("POST", "http://localhost:8080/api/v3/files", nil)
 	if err != nil {
+		f.Close()
 		log.Fatal().Err(err).Msg("Error creating request")
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Upload-Length", fmt.Sprint(fileSize))
 	req.Header.Set("Tus-Resumable", "1.0.0")
+
+	f.Close()
 
 	httpClient := &http.Client{
 		Transport: &http.Transport{
@@ -50,6 +54,7 @@ func main() {
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
+
 		log.Fatal().Err(err).Msg("Error sending request")
 	}
 	defer resp.Body.Close()
@@ -67,7 +72,6 @@ func main() {
 	log.Debug().Str("id", id).Msg("Extracted file ID")
 
 	for {
-
 		req, err := http.NewRequest("HEAD", "http://localhost:8080/api/v3/files/"+id, nil)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Error creating request")
@@ -86,7 +90,6 @@ func main() {
 		resp.Body.Close()
 
 		log.Debug().Msg(string(d))
-
 		uploadOffset := resp.Header.Get("Upload-Offset")
 		offset, err := strconv.ParseInt(uploadOffset, 10, 64)
 		if err != nil {
@@ -106,7 +109,6 @@ func main() {
 		if err != nil {
 			log.Fatal().Err(err).Msg("Error opening file")
 		}
-		defer f.Close()
 
 		start, err := f.Seek(offset, io.SeekStart)
 		if err != nil {
@@ -114,10 +116,16 @@ func main() {
 		}
 		log.Debug().Int64("start", start).Msg("Seek to offset")
 
+		// Create a limited reader for the chunk
+		remainingBytes := fileSize - offset
+		currentChunkSize := chunkSize
+		if remainingBytes < chunkSize {
+			currentChunkSize = remainingBytes
+		}
+		chunkReader := io.LimitReader(f, currentChunkSize)
+
 		ctx := context.Background()
-		// ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
-		// defer cancel()
-		req, err = http.NewRequestWithContext(ctx, "PATCH", "http://localhost:8080/api/v3/files/"+id, f)
+		req, err = http.NewRequestWithContext(ctx, "PATCH", "http://localhost:8080/api/v3/files/"+id, chunkReader)
 		if err != nil {
 			log.Fatal().Err(err).Msg("Error creating request")
 		}
@@ -125,14 +133,20 @@ func main() {
 		req.Header.Set("Tus-Resumable", "1.0.0")
 		req.Header.Set("Upload-Offset", fmt.Sprint(offset))
 
-		log.Debug().Msg("Sending file data")
+		log.Debug().
+			Int64("chunk_size", currentChunkSize).
+			Int64("offset", offset).
+			Msg("Sending file chunk")
 
 		resp, err = httpClient.Do(req)
 		if err != nil {
 			log.Warn().Err(err).Msg("Error sending request")
+			f.Close()
+			continue
 		}
 		if resp == nil {
 			log.Debug().Msg("patch response is nil")
+			f.Close()
 			continue
 		}
 
@@ -141,12 +155,11 @@ func main() {
 			log.Warn().Err(err).Msg("Error reading response")
 		}
 		resp.Body.Close()
+		f.Close()
 
 		log.Debug().Msg(string(d))
 		log.Debug().Int("status", resp.StatusCode).
 			Str("Upload-Offset", resp.Header.Get("Upload-Offset")).
 			Msg("Check file upload response")
-
 	}
-
 }

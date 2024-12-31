@@ -150,3 +150,28 @@ func main() {
 	}
 }
 ```
+
+# Testing
+
+1. Upload a 100MB file with no timeout on the server and client side.
+
+    Server is able to handle the upload properly.
+
+1. Upload a 100MB file with a timeout on the server side. Just big upload to the server
+
+    * Try adding idle timeout to the server 3 s -> upload succeeds
+    * Try adding read timeout to the server 3 s or 5 s-> server timeout, but some data is already wwritten on the server side and client successfully retries the upload.
+    
+    * Try adding write timeout for server 3s -> client get EOF, but server is able to get all the data. 
+
+    ```bash
+    1:26AM WRN Error sending request error="Patch \"http://localhost:8080/api/v3/files/6470f427-0b21-40c7-8ac5-10f186e0b2b3\": EOF"
+
+    
+    ```
+    
+    Changing the timeout to 10s has no issue on the client. Write timeout is for writing the response back to the client. This timer start since the first time server try to write to the client.
+
+    http://monitoring.imrenagi.com:3080/share/halLhkMdG2uKLr6ExorTz
+
+    

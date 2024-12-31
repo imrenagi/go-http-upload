@@ -42,12 +42,17 @@ func (s *Server) Run(ctx context.Context) error {
 	httpServer := &http.Server{
 		Addr:    ":8080",
 		Handler: s.newHTTPHandler(),
-		// ReadTimeout is necessary here to prevent slowloris attacks.
+		// ReadTimeout is the maximum duration for reading the entire request, including the body.
+		// This prevents slowloris attacks.
+		// This is useful for handling request from slow client so that it won't hold the connection for too long.
+		ReadTimeout: 30 * time.Second,
+		// WriteTimeout is the maximum duration before timing out writes of the response.
+		// This is useful for handling slow client which read the response slowly.
+		WriteTimeout: 10 * time.Second,
+		// ReadHeaderTimeout is necessary here to prevent slowloris attacks.
 		// https://www.cloudflare.com/learning/ddos/ddos-attack-tools/slowloris/
-		// This is also useful when clients is already canceling the request, but the server is still holding the connection.
-		ReadTimeout:       3 * time.Second,
-		ReadHeaderTimeout: 3 * time.Second,
-		WriteTimeout:      3 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second,
+		// IdleTimeout is the maximum amount of time to wait for the next request when keep-alives are enabled.
 		IdleTimeout:       5 * time.Second,
 	}
 

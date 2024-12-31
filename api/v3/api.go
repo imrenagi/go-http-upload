@@ -242,11 +242,24 @@ type checksum struct {
 
 func (c *Controller) ResumeUpload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<20) //64MB
+		doneCh := make(chan struct{})
+		defer close(doneCh)
+
+		go func() {
+			select {
+			case <-doneCh:
+				log.Info().Msg("Upload completed")
+				return
+			case <-r.Context().Done():
+				log.Warn().Err(r.Context().Err()).Msg("Upload canceled")
+				return
+			}
+		}()
 
 		// r.Body = http.MaxBytesReader(w, r.Body, 10<<20) //10MB
 		vars := mux.Vars(r)
 		fileID := vars["file_id"]
-		log.Debug().Str("file_id", fileID).Msg("Check request path and query")
 
 		var checksum checksum
 		if c.extensions.Enabled(ChecksumExtension) {
@@ -275,17 +288,11 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 		}
 
 		contentType := r.Header.Get(ContentTypeHeader)
-		log.Debug().Str("upload_offset", uploadOffset).
-			Str("content_type", contentType).
-			Msg("Check request header")
-
 		if contentType != "application/offset+octet-stream" {
 			log.Debug().Str("content_type", contentType).Msg("Invalid Content-Type")
 			writeError(w, http.StatusUnsupportedMediaType, errors.New("invalid Content-Type header: expected application/offset+octet-stream"))
 			return
 		}
-
-		log.Debug().Msg("find the file metadata")
 
 		fm, ok := c.store.Find(fileID)
 		if !ok {
@@ -300,8 +307,12 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			return
 		}
 
+		log.Debug().Int64("offset_request", offset).
+			Int64("uploaded_size", fm.UploadedSize).
+			Msg("Check size")
+
 		if offset != fm.UploadedSize {
-			log.Debug().Msg("upload-Offset header does not match the current offset")
+			log.Warn().Msg("upload-Offset header does not match the current offset")
 			writeError(w, http.StatusConflict, errors.New("upload-Offset header does not match the current offset"))
 			return
 		}
@@ -374,8 +385,13 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 		} else {
 			n, err = io.Copy(f, r.Body)
 			if err != nil {
+
 				fm.UploadedSize += n
 				c.store.Save(fm.ID, fm)
+
+				log.Info().
+					Int64("written_size", n).
+					Msg("partial message is written")
 
 				var netErr net.Error
 				if errors.As(err, &netErr) && netErr.Timeout() {
