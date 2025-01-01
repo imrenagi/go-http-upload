@@ -8,6 +8,7 @@ import (
 	"github.com/gorilla/mux"
 	v1 "github.com/imrenagi/go-http-upload/api/v1"
 	v3 "github.com/imrenagi/go-http-upload/api/v3"
+	v4 "github.com/imrenagi/go-http-upload/api/v4"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/zerolog/log"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -53,7 +54,7 @@ func (s *Server) Run(ctx context.Context) error {
 		// https://www.cloudflare.com/learning/ddos/ddos-attack-tools/slowloris/
 		ReadHeaderTimeout: 5 * time.Second,
 		// IdleTimeout is the maximum amount of time to wait for the next request when keep-alives are enabled.
-		IdleTimeout:       5 * time.Second,
+		IdleTimeout: 5 * time.Second,
 	}
 
 	go func() {
@@ -100,6 +101,14 @@ func (s *Server) newHTTPHandler() http.Handler {
 	apiV3Router.Handle("/files", otelhttp.WithRouteTag("/api/v3/files", http.HandlerFunc(v3Controller.CreateUpload()))).Methods(http.MethodPost)
 	apiV3Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v3/files/{file_id}", http.HandlerFunc(v3Controller.GetOffset()))).Methods(http.MethodHead)
 	apiV3Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v3/files/{file_id}", http.HandlerFunc(v3Controller.ResumeUpload()))).Methods(http.MethodPatch)
+
+	v4Controller := v4.NewController(v4.NewStore())
+	apiV4Router := apiRouter.PathPrefix("/v4").Subrouter()
+	apiV4Router.Use(v4.TusResumableHeaderCheck, v4.TusResumableHeaderInjections)
+	apiV4Router.Handle("/files", otelhttp.WithRouteTag("/api/v4/files", http.HandlerFunc(v4Controller.GetConfig()))).Methods(http.MethodOptions)
+	apiV4Router.Handle("/files", otelhttp.WithRouteTag("/api/v4/files", http.HandlerFunc(v4Controller.CreateUpload()))).Methods(http.MethodPost)
+	apiV4Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v4/files/{file_id}", http.HandlerFunc(v4Controller.GetOffset()))).Methods(http.MethodHead)
+	apiV4Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v4/files/{file_id}", http.HandlerFunc(v4Controller.ResumeUpload()))).Methods(http.MethodPatch)
 
 	return otelhttp.NewHandler(mux, "/")
 }
