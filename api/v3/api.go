@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog/log"
 )
@@ -121,8 +120,8 @@ func NewController(s Storage, opts ...Option) Controller {
 }
 
 type Storage interface {
-	Find(id string) (FileMetadata, bool)
-	Save(id string, metadata FileMetadata)
+	Find(id string) (File, bool, error)
+	Save(id string, f File)
 }
 
 type Controller struct {
@@ -191,19 +190,20 @@ func (c *Controller) GetOffset() http.HandlerFunc {
 		vars := mux.Vars(r)
 		fileID := vars["file_id"]
 		log.Debug().Str("file_id", fileID).Msg("Check request path and query")
-		fm, ok := c.store.Find(fileID)
+		fm, ok, err := c.store.Find(fileID)
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte("File not found"))
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 
 		w.Header().Add(UploadOffsetHeader, fmt.Sprint(fm.UploadedSize))
 		w.Header().Add(UploadLengthHeader, fmt.Sprint(fm.TotalSize))
 		w.Header().Add("Cache-Control", "no-store")
-		if fm.Metadata != "" {
-			w.Header().Add(UploadMetadataHeader, fm.Metadata)
-		}
 		if !fm.ExpiresAt.IsZero() {
 			w.Header().Add(UploadExpiresHeader, uploadExpiresAt(fm.ExpiresAt))
 		}
@@ -273,17 +273,12 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 		}
 
 		uploadOffset := r.Header.Get(UploadOffsetHeader)
-		offset, err := strconv.ParseInt(uploadOffset, 10, 64)
+		offset, err := strconv.ParseUint(uploadOffset, 10, 64)
 		if err != nil {
 			log.Debug().Err(err).
 				Str("upload_offset", uploadOffset).
 				Msg("Invalid Upload-Offset header: not a number")
 			writeError(w, http.StatusBadRequest, errors.New("invalid Upload-Offset header: not a number"))
-			return
-		}
-		if offset < 0 {
-			log.Debug().Str("upload_offset", uploadOffset).Msg("Invalid Upload-Offset header: negative value")
-			writeError(w, http.StatusBadRequest, errors.New("invalid Upload-Offset header: negative value"))
 			return
 		}
 
@@ -294,10 +289,14 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			return
 		}
 
-		fm, ok := c.store.Find(fileID)
+		fm, ok, err := c.store.Find(fileID)
 		if !ok {
 			log.Debug().Str("file_id", fileID).Msg("file not found")
 			writeError(w, http.StatusNotFound, errors.New("file not found"))
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
 			return
 		}
 
@@ -307,8 +306,8 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			return
 		}
 
-		log.Debug().Int64("offset_request", offset).
-			Int64("uploaded_size", fm.UploadedSize).
+		log.Debug().Uint64("offset_request", offset).
+			Uint64("uploaded_size", fm.UploadedSize).
 			Msg("Check size")
 
 		if offset != fm.UploadedSize {
@@ -317,7 +316,7 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 			return
 		}
 
-		f, err := os.OpenFile(fm.FilePath(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		f, err := os.OpenFile(fm.Path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err != nil {
 			log.Error().Err(err).Msg("error opening the file")
 			writeError(w, http.StatusBadRequest, errors.New("error opening the file"))
@@ -380,13 +379,13 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 				return
 			}
 
-			fm.UploadedSize += n
+			fm.UploadedSize += uint64(n)
 			c.store.Save(fm.ID, fm)
 		} else {
 			n, err = io.Copy(f, r.Body)
 			if err != nil {
 
-				fm.UploadedSize += n
+				fm.UploadedSize += uint64(n)
 				c.store.Save(fm.ID, fm)
 
 				log.Info().
@@ -404,7 +403,7 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 				writeError(w, http.StatusInternalServerError, fmt.Errorf("error writing the file: %w", err))
 				return
 			}
-			fm.UploadedSize += n
+			fm.UploadedSize += uint64(n)
 			c.store.Save(fm.ID, fm)
 		}
 
@@ -455,12 +454,14 @@ func (c *Controller) CreateUpload() http.HandlerFunc {
 		uploadMetadata := r.Header.Get(UploadMetadataHeader)
 		log.Debug().Str("upload_metadata", uploadMetadata).Msg("Check request header")
 
-		fm := FileMetadata{
-			ID:        uuid.New().String(),
-			TotalSize: totalSize,
-			Metadata:  uploadMetadata,
-			ExpiresAt: time.Now().Add(UploadMaxDuration),
+		fm, err := NewFile(totalSize,
+			uploadMetadata,
+			time.Now().Add(UploadMaxDuration))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
+
 		c.store.Save(fm.ID, fm)
 
 		w.Header().Add("Location", fmt.Sprintf("/files/%s", fm.ID))

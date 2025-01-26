@@ -117,7 +117,7 @@ func NewController(s Storage, opts ...Option) Controller {
 		log.Fatal().Err(err).Msg("error creating storage client")
 	}
 
-	bkt := client.Bucket("imrenagi-upload-test")
+	bkt := client.Bucket("go-http-upload-gcs-test")
 
 	return Controller{
 		store:      s,

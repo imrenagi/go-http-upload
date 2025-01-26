@@ -102,6 +102,8 @@ func (s *Server) newHTTPHandler() http.Handler {
 	apiV3Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v3/files/{file_id}", http.HandlerFunc(v3Controller.GetOffset()))).Methods(http.MethodHead)
 	apiV3Router.Handle("/files/{file_id}", otelhttp.WithRouteTag("/api/v3/files/{file_id}", http.HandlerFunc(v3Controller.ResumeUpload()))).Methods(http.MethodPatch)
 
+	apiV3Router.HandleFunc("/files/{file_id}/upload", v3Controller.CreateUpload()).Methods(http.MethodPost)
+
 	v4Controller := v4.NewController(v4.NewStore())
 	apiV4Router := apiRouter.PathPrefix("/v4").Subrouter()
 	apiV4Router.Use(v4.TusResumableHeaderCheck, v4.TusResumableHeaderInjections)
