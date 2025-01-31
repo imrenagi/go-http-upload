@@ -12,29 +12,29 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func newFakeStore(m map[string]FileMetadata) *fakeStore {
+func newFakeStore(m map[string]File) *fakeStore {
 	return &fakeStore{
 		files: m,
 	}
 }
 
 type fakeStore struct {
-	files map[string]FileMetadata
+	files map[string]File
 }
 
-func (s *fakeStore) Find(id string) (FileMetadata, bool) {
+func (s *fakeStore) Find(id string) (File, bool, error) {
 	metadata, exists := s.files[id]
-	return metadata, exists
+	return metadata, exists, nil
 }
 
-func (s *fakeStore) Save(id string, metadata FileMetadata) {
+func (s *fakeStore) Save(id string, metadata File) {
 	s.files[id] = metadata
 }
 
 func TestGetOffset(t *testing.T) {
 	t.Run("The Server MUST always include the Upload-Offset header in the response for a HEAD request. The Server SHOULD acknowledge successful HEAD requests with a 200 OK or 204 No Content status.",
 		func(t *testing.T) {
-			m := map[string]FileMetadata{
+			m := map[string]File{
 				"a": {
 					ID:           "a",
 					UploadedSize: 0,
@@ -57,7 +57,7 @@ func TestGetOffset(t *testing.T) {
 		})
 
 	t.Run("If the size of the upload is known, the Server MUST include the Upload-Length header in the response.", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 19,
@@ -78,7 +78,7 @@ func TestGetOffset(t *testing.T) {
 	})
 
 	t.Run("If the resource is not found, the Server SHOULD return either the 404 Not Found status without the Upload-Offset header.", func(t *testing.T) {
-		m := map[string]FileMetadata{}
+		m := map[string]File{}
 		ctrl := NewController(newFakeStore(m))
 
 		req := httptest.NewRequest(http.MethodHead, "/api/v1/files/a", nil)
@@ -96,7 +96,7 @@ func TestGetOffset(t *testing.T) {
 
 func TestTusResumableHeader(t *testing.T) {
 	t.Run("Return 400 if The Tus-Resumable header is not included in HEAD request", func(t *testing.T) {
-		m := map[string]FileMetadata{}
+		m := map[string]File{}
 		ctrl := NewController(newFakeStore(m))
 
 		req := httptest.NewRequest(http.MethodHead, "/api/v1/files/a", nil)
@@ -114,7 +114,7 @@ func TestTusResumableHeader(t *testing.T) {
 	})
 
 	t.Run("Return 412 if The Tus-Resumable header is not supported by the server. server must not process the request", func(t *testing.T) {
-		m := map[string]FileMetadata{}
+		m := map[string]File{}
 		ctrl := NewController(newFakeStore(m))
 
 		req := httptest.NewRequest(http.MethodHead, "/api/v1/files/a", nil)
@@ -133,7 +133,7 @@ func TestTusResumableHeader(t *testing.T) {
 	})
 
 	t.Run("Multipe value of The Tus-Resumable header can be supported by the server", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 19,
@@ -159,7 +159,7 @@ func TestTusResumableHeader(t *testing.T) {
 	})
 
 	t.Run("The Tus-Resumable header MUST be included in every response in HEAD requests. ", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 19,
@@ -181,7 +181,7 @@ func TestTusResumableHeader(t *testing.T) {
 
 func TestGetConfig(t *testing.T) {
 	t.Run("A successful response indicated by the 204 No Content or 200 OK status MUST contain the Tus-Version header", func(t *testing.T) {
-		m := map[string]FileMetadata{}
+		m := map[string]File{}
 		ctrl := NewController(newFakeStore(m))
 
 		req := httptest.NewRequest(http.MethodOptions, "/api/v1/files", nil)
@@ -197,7 +197,7 @@ func TestGetConfig(t *testing.T) {
 	})
 
 	t.Run("It MAY include the Tus-Extension and Tus-Max-Size headers.", func(t *testing.T) {
-		m := map[string]FileMetadata{}
+		m := map[string]File{}
 		ctrl := NewController(newFakeStore(m),
 			WithExtensions(Extensions{CreationExtension,
 				ExpirationExtension,
@@ -217,7 +217,7 @@ func TestGetConfig(t *testing.T) {
 	})
 
 	t.Run("The extension header must be omitted if the server does not support any extensions", func(t *testing.T) {
-		m := map[string]FileMetadata{}
+		m := map[string]File{}
 		ctrl := NewController(newFakeStore(m),
 			WithExtensions(Extensions{}),
 		)
@@ -239,7 +239,7 @@ func TestGetConfig(t *testing.T) {
 func TestResumeUpload(t *testing.T) {
 
 	t.Run("Upload-Offset must be included in the request", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -260,7 +260,7 @@ func TestResumeUpload(t *testing.T) {
 	})
 
 	t.Run("Upload-Offset must be included in the request with value gte 0", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -282,7 +282,7 @@ func TestResumeUpload(t *testing.T) {
 	})
 
 	t.Run("When PATCH requests doesnt use Content-Type: application/offset+octet-stream, server SHOULD return a 415 Unsupported Media Type status", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -305,7 +305,7 @@ func TestResumeUpload(t *testing.T) {
 	})
 
 	t.Run("If the server receives a PATCH request against a non-existent resource it SHOULD return a 404 Not Found status.", func(t *testing.T) {
-		m := map[string]FileMetadata{}
+		m := map[string]File{}
 		ctrl := NewController(newFakeStore(m), WithExtensions(Extensions{}))
 
 		req := httptest.NewRequest(http.MethodPatch, "/api/v1/files/a", nil)
@@ -322,7 +322,7 @@ func TestResumeUpload(t *testing.T) {
 	})
 
 	t.Run(" If the offsets do not match, the Server MUST respond with the 409 Conflict status without modifying the upload resource.", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -345,7 +345,7 @@ func TestResumeUpload(t *testing.T) {
 	})
 
 	t.Run("The Server MUST acknowledge successful PATCH requests with the 204 No Content status. It MUST include the Upload-Offset header containing the new offset", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -371,7 +371,7 @@ func TestResumeUpload(t *testing.T) {
 
 func TestExpiration(t *testing.T) {
 	t.Run("The expiration header may be included in the HEAD response when the upload is going to expire.", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -397,7 +397,7 @@ func TestExpiration(t *testing.T) {
 	})
 
 	t.Run("the Server SHOULD respond with 410 Gone status if the Server is keeping track of expired uploads", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -423,7 +423,7 @@ func TestExpiration(t *testing.T) {
 	})
 
 	t.Run("This header MUST be included in every PATCH response if the upload is going to expire.", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -454,7 +454,7 @@ func TestExpiration(t *testing.T) {
 	})
 
 	t.Run("If a Client does attempt to resume an upload which has since been removed by the Server, the Server SHOULD respond with 410 Gone status", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -484,7 +484,7 @@ func TestExpiration(t *testing.T) {
 
 func TestChecksum(t *testing.T) {
 	t.Run("The Upload-Checksum header MUST consist of the name of the used checksum algorithm and the Base64 encoded checksum separated by a space.", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -509,7 +509,7 @@ func TestChecksum(t *testing.T) {
 	})
 
 	t.Run("The Server MUST support at least the SHA1 checksum algorithm identified by sha1", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -534,7 +534,7 @@ func TestChecksum(t *testing.T) {
 	})
 
 	t.Run("Patch must failed when The Upload-Checksum header only has 1 segment", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -559,7 +559,7 @@ func TestChecksum(t *testing.T) {
 	})
 
 	t.Run("Patch must failed when The Upload-Checksum header use unsupported hash algorithm", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,
@@ -584,7 +584,7 @@ func TestChecksum(t *testing.T) {
 	})
 
 	t.Run("Patch must failed when The checksum value not matched", func(t *testing.T) {
-		m := map[string]FileMetadata{
+		m := map[string]File{
 			"a": {
 				ID:           "a",
 				UploadedSize: 0,

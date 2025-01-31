@@ -425,38 +425,34 @@ func (c *Controller) CreateUpload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		uploadDeferLength := r.Header.Get(UploadDeferLengthHeader)
 		if uploadDeferLength != "" && uploadDeferLength != "1" {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Invalid Upload-Defer-Length header"))
+			writeError(w, http.StatusBadRequest, errors.New("invalid Upload-Defer-Length header"))
 			return
 		}
+
+		fm := NewFile()
+		fm.ExpiresAt = time.Now().Add(UploadMaxDuration)
 
 		isDeferLength := uploadDeferLength == "1"
-		if isDeferLength {
-			w.WriteHeader(http.StatusNotImplemented)
-			w.Write([]byte("Upload-Defer-Length is not implemented"))
-			return
+		if !isDeferLength {
+			totalLength := r.Header.Get(UploadLengthHeader)
+			totalSize, err := strconv.ParseUint(totalLength, 10, 64)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, errors.New("invalid Upload-Length header"))
+				return
+			}
+			fm.IsDeferLength = false
+			fm.TotalSize = totalSize
 		}
 
-		// TODO doesn't this upload length optional?
-		totalLength := r.Header.Get(UploadLengthHeader)
-		totalSize, err := strconv.ParseUint(totalLength, 10, 64)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("Invalid Upload-Length header"))
+		if fm.TotalSize > c.maxSize {
+			writeError(w, http.StatusRequestEntityTooLarge, errors.New("upload length exceeds the maximum size"))
 			return
-		}
-
-		if c.maxSize > 0 && totalSize > c.maxSize {
-			w.WriteHeader(http.StatusRequestEntityTooLarge)
-			w.Write([]byte("Upload-Length exceeds the maximum size"))
 		}
 
 		uploadMetadata := r.Header.Get(UploadMetadataHeader)
 		log.Debug().Str("upload_metadata", uploadMetadata).Msg("Check request header")
 
-		fm, err := NewFile(totalSize,
-			uploadMetadata,
-			time.Now().Add(UploadMaxDuration))
+		err := fm.ParseMetadata(uploadMetadata)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
@@ -464,12 +460,11 @@ func (c *Controller) CreateUpload() http.HandlerFunc {
 
 		c.store.Save(fm.ID, fm)
 
-		w.Header().Add("Location", fmt.Sprintf("/files/%s", fm.ID))
+		w.Header().Add("Location", fmt.Sprintf("http://127.0.0.1:8080/files/%s", fm.ID))
 		if !fm.ExpiresAt.IsZero() {
 			w.Header().Add(UploadExpiresHeader, uploadExpiresAt(fm.ExpiresAt))
 		}
 		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte("CreateUpload"))
 	}
 }
 

@@ -9,29 +9,29 @@ import (
 	"github.com/google/uuid"
 )
 
-func NewFile(size uint64, metadata string, expiresAt time.Time) (File, error) {
+func NewFile() File {
+	id := uuid.New().String()
 	f := File{
-		ID:        uuid.New().String(),
-		TotalSize: size,
-		ExpiresAt: expiresAt,
-		Path:      "/tmp/file-upload-" + uuid.New().String(),
+		ID:            id,
+		IsDeferLength: true,
+		Path:          "/tmp/file-upload-" + id,
 	}
-	f.parseMetadata(metadata)
-	return f, nil
+	return f
 }
 
 type File struct {
-	ID           string
-	Name         string
-	TotalSize    uint64
-	UploadedSize uint64
-	ContentType  string
-	Checksum     string
-	ExpiresAt    time.Time
-	Path         string
+	ID            string
+	Name          string
+	TotalSize     uint64
+	UploadedSize  uint64
+	ContentType   string
+	Checksum      string
+	ExpiresAt     time.Time
+	Path          string
+	IsDeferLength bool
 }
 
-func (f *File) parseMetadata(m string) error {
+func (f *File) ParseMetadata(m string) error {
 	md := make(map[string]string)
 	kvs := strings.Split(m, ",")
 	for _, kv := range kvs {
