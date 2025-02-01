@@ -202,7 +202,10 @@ func (c *Controller) GetOffset() http.HandlerFunc {
 		}
 
 		w.Header().Add(UploadOffsetHeader, fmt.Sprint(fm.UploadedSize))
-		w.Header().Add(UploadLengthHeader, fmt.Sprint(fm.TotalSize))
+		if !fm.IsDeferLength {
+			w.Header().Add(UploadLengthHeader, fmt.Sprint(fm.TotalSize))
+		}
+
 		w.Header().Add("Cache-Control", "no-store")
 		if !fm.ExpiresAt.IsZero() {
 			w.Header().Add(UploadExpiresHeader, uploadExpiresAt(fm.ExpiresAt))
@@ -261,6 +264,13 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 		vars := mux.Vars(r)
 		fileID := vars["file_id"]
 
+		contentType := r.Header.Get(ContentTypeHeader)
+		if contentType != "application/offset+octet-stream" {
+			log.Debug().Str("content_type", contentType).Msg("Invalid Content-Type")
+			writeError(w, http.StatusUnsupportedMediaType, errors.New("invalid Content-Type header: expected application/offset+octet-stream"))
+			return
+		}
+
 		var checksum checksum
 		if c.extensions.Enabled(ChecksumExtension) {
 			var err error
@@ -270,23 +280,6 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 				writeError(w, http.StatusBadRequest, err)
 				return
 			}
-		}
-
-		uploadOffset := r.Header.Get(UploadOffsetHeader)
-		offset, err := strconv.ParseUint(uploadOffset, 10, 64)
-		if err != nil {
-			log.Debug().Err(err).
-				Str("upload_offset", uploadOffset).
-				Msg("Invalid Upload-Offset header: not a number")
-			writeError(w, http.StatusBadRequest, errors.New("invalid Upload-Offset header: not a number"))
-			return
-		}
-
-		contentType := r.Header.Get(ContentTypeHeader)
-		if contentType != "application/offset+octet-stream" {
-			log.Debug().Str("content_type", contentType).Msg("Invalid Content-Type")
-			writeError(w, http.StatusUnsupportedMediaType, errors.New("invalid Content-Type header: expected application/offset+octet-stream"))
-			return
 		}
 
 		fm, ok, err := c.store.Find(fileID)
@@ -303,6 +296,16 @@ func (c *Controller) ResumeUpload() http.HandlerFunc {
 		if c.extensions.Enabled(ExpirationExtension) && fm.ExpiresAt.Before(time.Now()) {
 			log.Debug().Str("file_id", fileID).Msg("file expired")
 			writeError(w, http.StatusGone, errors.New("file expired"))
+			return
+		}
+
+		uploadOffset := r.Header.Get(UploadOffsetHeader)
+		offset, err := strconv.ParseUint(uploadOffset, 10, 64)
+		if err != nil {
+			log.Debug().Err(err).
+				Str("upload_offset", uploadOffset).
+				Msg("Invalid Upload-Offset header: not a number")
+			writeError(w, http.StatusBadRequest, errors.New("invalid Upload-Offset header: not a number"))
 			return
 		}
 
